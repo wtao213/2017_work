@@ -147,14 +147,16 @@ run;
 
 data customer_f1;
 	set customer_final;
-	format total_sales best8.	wk_tot_sales best8.
+	format total_sales best8.	wk_tot_sales best8.	wk_ds_sales best8. tot_txn best8.
 			wk_mk_sales  best8. high_bound_q111 best8. share_w best8.;
 	
 	hhgroup = put(HHCMP10_Q74,fgroup.);
 	
 	total_sales = sum(mk_sales,ds_sales);
 	wk_mk_sales = mk_sales/52;
-	wk_tot_sales = total_sales /52;
+	wk_ds_sales = ds_sales/52;
+	wk_tot_sales = total_sales /52;	
+	tot_txn = sum(mk_txn,ds_txn);
 	
 	if 		SPENT_ON_GROCERY_Q111="Under $100" then high_bound_q111 = 100;
 	else if SPENT_ON_GROCERY_Q111="$100-149" then high_bound_q111 = 125;
@@ -172,13 +174,9 @@ data customer_f1;
   	else if  0.9 <share_w < 0.99 then share_w_group = "90%-99%";
   	else    	 					  share_w_group = "100% +"; 
 run;	
-/* customer spend much more than they say */
 
-data large_spend_cust;
-	set customer_f1;
-	
-	where MCH_Desc = "Total" and wk_tot_sales > high_bound_q111;
-run;
+
+
 /***********************************************************/
 /* how people say their spend, and how they acutally spend */
 /************************************************************/
@@ -299,8 +297,37 @@ data fc_v1;
 	else 					 						 	     pocket = "<60%";
 	
 run;
+/**********************************************************/
+/* cut off the highest 5% and lowest 5% tot_txn customers */
+/***********************************************************/
+proc sort data=fc_v1 out=fc_v1_nooutlier;
+		by tot_txn;
+run;
 
-proc sort data=fc_v1(keep=pocket MembershipID);
+proc summary data=fc_v1_nooutlier;
+	var tot_txn;
+	output out=test1 p5= p95= /autoname;
+run;
+
+data _null_;
+	set test1;
+	call symputx('p5',tot_txn_p5);
+	call symputx('p95',tot_txn_p95);
+run;
+%put &p5;
+%put &p95;
+
+data fc_v2;
+	set fc_v1_nooutlier;
+	
+	where &p5 le tot_txn le &p95;
+run;
+
+
+/***********************************************************/
+/* merge the idea customer set   */
+/*********************************/
+proc sort data=fc_v2(keep=pocket MembershipID tot_txn);
 	by MembershipID;
 run;
 
@@ -322,7 +349,7 @@ ods excel file='C:/Users/sophia/Desktop/pocket_category.xlsx' style = pearl
 options(sheet_interval = "table" sheet_name="none");
 proc tabulate data=fc_full missing;
 	var  FICO_STORE ds_sales ds_units ds_txn mk_sales mk_units mk_txn total_sales
-	wk_mk_sales wk_tot_sales;
+	wk_mk_sales wk_tot_sales wk_ds_sales tot_txn;
 	class time_frame Store_Divison Value_Segment age_range Gender MCH_Desc
 	LCL_PURCHASER_TYPE_Q121	REGION2 USMAR2_Q73	HHCMP10_Q74	HH_KIDS_Q97
 	SPENT_ON_GROCERY_Q111 hhgroup GROCERY_FREQUENCY PERCENTAGE_EXPENDITURE_LCL_Q112 
@@ -333,11 +360,21 @@ proc tabulate data=fc_full missing;
 	tables pocket all, (hhgroup all)*(n colpctn);
 	
 	tables (hhgroup all),(pocket all)*(wk_mk_sales)*(n mean);
+	
+	tables (hhgroup all),(pocket all)*(wk_ds_sales)*(n mean);
+	
+	tables (hhgroup all),(pocket all)*(wk_tot_sales)*(n mean);
+	
+	tables (hhgroup all),(pocket all)*(mk_txn)*(n mean);
+	
+	tables (hhgroup all),(pocket all)*(ds_txn)*(n mean);
+	
+	tables (hhgroup all),(pocket all)*(tot_txn)*(n mean);
 run;
 
 proc tabulate data=fc_full missing;
 	var  FICO_STORE ds_sales ds_units ds_txn mk_sales mk_units mk_txn total_sales
-	wk_mk_sales wk_tot_sales;
+	wk_mk_sales wk_tot_sales wk_ds_sales tot_txn;
 	class time_frame Store_Divison Value_Segment age_range Gender MCH_Desc
 	LCL_PURCHASER_TYPE_Q121	REGION2 USMAR2_Q73	HHCMP10_Q74	HH_KIDS_Q97
 	SPENT_ON_GROCERY_Q111 hhgroup GROCERY_FREQUENCY PERCENTAGE_EXPENDITURE_LCL_Q112 
@@ -345,10 +382,50 @@ proc tabulate data=fc_full missing;
 	
 	where MCH_Desc ~= "Total";
 	
+	tables MCH_Desc,(hhgroup all)*(pocket all)*(wk_tot_sales)*(n sum colpctsum);
+	
 	tables MCH_Desc,(hhgroup all)*(pocket all)*(wk_mk_sales)*(n sum colpctsum);
 	
+	tables MCH_Desc,(hhgroup all)*(pocket all)*(wk_ds_sales)*(n sum colpctsum);
+	
+	tables MCH_Desc,(hhgroup all)*(pocket all)*(mk_txn)*(n sum colpctsum);
+	
+	tables MCH_Desc,(hhgroup all)*(pocket all)*(ds_txn)*(n sum colpctsum);
+	
+	tables MCH_Desc,(hhgroup all)*(pocket all)*(tot_txn)*(n sum colpctsum);
 run;
 ods excel close;
 
 proc export data=fc_full dbms=xlsx outfile = "C:/Users/sophia/Desktop/fc_full.xlsx" replace;
+run;
+
+/***********************************/
+/* plots for txn  */
+/************************/
+ods noproctitle;
+ods graphics / imagemap=on;
+
+/*** Exploring Data ***/
+proc univariate data=WORK.FC_FULL;
+	
+	where MCH_Desc= "Total";
+	var tot_txn;
+	histogram tot_txn/normal;
+run;
+
+title "couple only";
+proc univariate data=WORK.FC_FULL;
+	
+	where hhgroup="couple" and  MCH_Desc= "Total";
+	var tot_txn;
+	histogram tot_txn/normal;
+run;
+
+
+title "family only";
+proc univariate data=WORK.FC_FULL;
+	
+	where hhgroup="family" and MCH_Desc= "Total";
+	var tot_txn;
+	histogram tot_txn/normal;
 run;
